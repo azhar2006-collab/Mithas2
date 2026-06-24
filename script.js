@@ -12,10 +12,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const preloader = document.getElementById('preloader');
   if (preloader) {
     const PRELOADER_KEY = 'mithas_preloader_seen_v3';
-    const alreadySeen = sessionStorage.getItem(PRELOADER_KEY) === '1';
     const showDuration = isMobileView || isTouchDevice ? 3000 : 2800;
     let dismissed = false;
     let dismissTimer = null;
+
+    const safeSessionGet = (key) => {
+      try { return sessionStorage.getItem(key); } catch { return null; }
+    };
+    const safeSessionSet = (key, value) => {
+      try { sessionStorage.setItem(key, value); } catch { /* private browsing */ }
+    };
 
     const dismissPreloader = () => {
       if (dismissed) return;
@@ -23,8 +29,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (dismissTimer) clearTimeout(dismissTimer);
       preloader.classList.add('loaded');
       document.body.classList.remove('preloader-active');
-      sessionStorage.setItem(PRELOADER_KEY, '1');
+      safeSessionSet(PRELOADER_KEY, '1');
     };
+
+    const alreadySeen = safeSessionGet(PRELOADER_KEY) === '1';
 
     if (alreadySeen) {
       preloader.classList.add('loaded');
@@ -39,32 +47,10 @@ document.addEventListener('DOMContentLoaded', () => {
         preloader.classList.add('preloader--mobile');
       }
 
-      let sequenceStarted = false;
+      // Start dismiss timer immediately — do not wait on fonts.ready (can hang on mobile)
+      dismissTimer = setTimeout(dismissPreloader, showDuration);
 
-      const startDismissTimer = () => {
-        dismissTimer = setTimeout(dismissPreloader, showDuration);
-      };
-
-      const beginSequence = () => {
-        if (sequenceStarted) return;
-        sequenceStarted = true;
-        if (document.fonts && document.fonts.ready) {
-          document.fonts.ready.then(startDismissTimer).catch(startDismissTimer);
-        } else {
-          startDismissTimer();
-        }
-      };
-
-      const logo = preloader.querySelector('.preloader-logo');
-      if (logo && !logo.complete) {
-        logo.addEventListener('load', beginSequence, { once: true });
-        logo.addEventListener('error', beginSequence, { once: true });
-        setTimeout(beginSequence, 1200);
-      } else {
-        beginSequence();
-      }
-
-      preloader.addEventListener('click', dismissPreloader);
+      preloader.addEventListener('click', dismissPreloader, { once: true });
     }
   }
 
@@ -113,9 +99,11 @@ document.addEventListener('DOMContentLoaded', () => {
   onScroll();
 
   // Back to top click event
-  toTop.addEventListener('click', () => {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  });
+  if (toTop) {
+    toTop.addEventListener('click', () => {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
 
   /* ── 3. MOBILE NAVIGATION ── */
   const menuToggle = document.getElementById('menuToggle');
@@ -218,8 +206,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* ── 6. HONEY DRIP CURSOR PARTICLES (desktop only, pauses when idle) ── */
   const canvas = document.getElementById('drip-canvas');
-  if (canvas && !isTouchDevice && !prefersReducedMotion) {
+  const enableDripCanvas = canvas && !isTouchDevice && !isMobileView && !prefersReducedMotion;
+
+  if (enableDripCanvas) {
     const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      canvas.remove();
+    } else {
     let cw = canvas.width = window.innerWidth;
     let ch = canvas.height = window.innerHeight;
     let particles = [];
@@ -258,22 +251,31 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!particles.length) return;
 
       ctx.clearRect(0, 0, cw, ch);
-      particles.forEach(p => {
+      const alive = [];
+
+      for (const p of particles) {
         p.y += p.vy;
         p.x += p.vx;
         p.life -= 0.022;
-        if (p.life <= 0) return;
+        if (p.life <= 0.01) continue;
 
         const alpha = p.life * 0.55;
-        const rx = Math.max(p.r * p.life, 0.15);
-        const ry = Math.max(p.r * p.life * p.elongation, 0.15);
-        ctx.beginPath();
-        ctx.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${p.color}, ${alpha})`;
-        ctx.fill();
-      });
+        const rx = Math.max(p.r * p.life, 0.2);
+        const ry = Math.max(p.r * p.life * p.elongation, 0.2);
 
-      particles = particles.filter(p => p.life > 0);
+        try {
+          ctx.beginPath();
+          ctx.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${p.color}, ${alpha})`;
+          ctx.fill();
+        } catch {
+          /* skip invalid draw frames */
+        }
+
+        alive.push(p);
+      }
+
+      particles = alive;
       if (particles.length) scheduleFrame();
     }
 
@@ -299,6 +301,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.clearRect(0, 0, cw, ch);
       }
     });
+    }
   } else if (canvas) {
     canvas.remove();
   }
@@ -471,7 +474,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // Tab Filter for Accordion Categories
   tabButtons.forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelector('.tab-btn.active').classList.remove('active');
+      const currentActive = document.querySelector('.tab-btn.active');
+      if (currentActive) currentActive.classList.remove('active');
       btn.classList.add('active');
       filterAccordionCatalog();
     });
@@ -504,8 +508,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Item-level search filter
       catItems.forEach(item => {
-        const name = item.querySelector('.cat-item-name').textContent.toLowerCase();
-        const size = item.querySelector('.cat-item-size').textContent.toLowerCase();
+        const nameEl = item.querySelector('.cat-item-name');
+        const sizeEl = item.querySelector('.cat-item-size');
+        if (!nameEl || !sizeEl) return;
+
+        const name = nameEl.textContent.toLowerCase();
+        const size = sizeEl.textContent.toLowerCase();
         const badge = item.querySelector('.item-badge');
         const badgeText = badge ? badge.textContent.toLowerCase() : '';
 
@@ -562,8 +570,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   formTabBtns.forEach(btn => {
     btn.addEventListener('click', () => {
-      // Toggle Tab Active Classes
-      document.querySelector('.form-tab-btn.active').classList.remove('active');
+      const currentActive = document.querySelector('.form-tab-btn.active');
+      if (currentActive) currentActive.classList.remove('active');
       btn.classList.add('active');
 
       // Toggle Display Pane Active Classes
